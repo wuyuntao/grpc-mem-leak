@@ -10,10 +10,10 @@ namespace GrpcMemLeak
     {
         static void Main(string[] args)
         {
-            TestAsync().Wait();
+            TestMemLeakAsync().Wait();
         }
 
-        static async Task TestAsync()
+        static async Task TestMemLeakAsync()
         {
             var channel = new Channel("192.168.2.13", 2379, ChannelCredentials.Insecure);
             var leaseClient = new Lease.LeaseClient(channel);
@@ -23,26 +23,23 @@ namespace GrpcMemLeak
 
             for (int i = 0; i < 100; i++)
             {
-                using (var shutdown = CancellationTokenSource.CreateLinkedTokenSource(channel.ShutdownToken))
+                var leaseGrantReq = new LeaseGrantRequest()
                 {
-                    var leaseGrantReq = new LeaseGrantRequest()
-                    {
-                        TTL = 100,
-                    };
-                    var leaseGrantRes = await leaseClient.LeaseGrantAsync(leaseGrantReq, cancellationToken: shutdown.Token);
+                    TTL = 100,
+                };
+                var leaseGrantRes = await leaseClient.LeaseGrantAsync(leaseGrantReq, cancellationToken: channel.ShutdownToken);
 
-                    using (var leaser = leaseClient.LeaseKeepAlive(cancellationToken: shutdown.Token))
-                    {
-                        var leaseKeepAliveReq = new LeaseKeepAliveRequest() { ID = leaseGrantRes.ID };
-                        await leaser.RequestStream.WriteAsync(leaseKeepAliveReq);
-                        await leaser.RequestStream.CompleteAsync();
+                using (var leaser = leaseClient.LeaseKeepAlive(cancellationToken: channel.ShutdownToken))
+                {
+                    var leaseKeepAliveReq = new LeaseKeepAliveRequest() { ID = leaseGrantRes.ID };
+                    await leaser.RequestStream.WriteAsync(leaseKeepAliveReq);
+                    await leaser.RequestStream.CompleteAsync();
 
-                        while (await leaser.ResponseStream.MoveNext(shutdown.Token))
-                        {
-                            var leaseKeepAliveRes = leaser.ResponseStream.Current;
-                            if (leaseKeepAliveRes.ID == leaseKeepAliveReq.ID)
-                                break;
-                        }
+                    while (await leaser.ResponseStream.MoveNext(channel.ShutdownToken))
+                    {
+                        var leaseKeepAliveRes = leaser.ResponseStream.Current;
+                        if (leaseKeepAliveRes.ID == leaseKeepAliveReq.ID)
+                            break;
                     }
                 }
             }
@@ -53,6 +50,8 @@ namespace GrpcMemLeak
             GC.Collect();
             Console.WriteLine("GC");
             Console.ReadLine();
+
+            await channel.ShutdownAsync();
         }
     }
 }
